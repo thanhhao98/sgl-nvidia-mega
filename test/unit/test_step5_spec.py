@@ -219,8 +219,8 @@ def test_an_unknown_slot_is_refused_by_name(monkeypatch):
     monkeypatch.setattr(runtime, "SLOTS", frozenset({"swa_core"}))
     message = _refusal()
     assert (
-        "SGLANG_NVIDIA_MEGAKERNEL_SLOTS: unknown slot 'swa_core' (known: none)"
-        in message
+        "SGLANG_NVIDIA_MEGAKERNEL_SLOTS: unknown slot 'swa_core' "
+        "(known: moe_quant_alt, swa_attn)" in message
     ), message
     # the spec still imports with an unknown name requested: it claims no tolerance
     assert spec.numerics(frozenset({"swa_core"})).kind.value == "bitwise"

@@ -236,7 +236,11 @@ def test_a_requested_slot_that_builds_no_width_stops_the_build(monkeypatch):
 
 def test_spec_and_runtime_agree_on_the_stock_numerics():
     assert runtime.SLOTS == frozenset() and runtime.slot_reasons() == []
-    assert runtime.SHIPPED_SLOTS == () and runtime.BITWISE_SLOTS == frozenset()
+    # both slots are opt-in until their gates pass; the stock step is bitwise
+    assert runtime.SHIPPED_SLOTS == ()
+    assert runtime.OPT_IN_SLOTS == ("moe_quant_alt", "swa_attn")
+    assert runtime.BITWISE_SLOTS == frozenset({"moe_quant_alt"})
+    assert set(runtime.TOLERANCES) == {"swa_attn"}
     assert spec.numerics(frozenset()).kind.value == "bitwise"
 
 

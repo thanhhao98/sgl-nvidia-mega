@@ -27,12 +27,21 @@ MAX_ROWS = MAX_REQUESTS * TOKENS_PER_REQUEST  # 32
 
 
 class Slots(msgspec.Struct, frozen=True):
-    """The kernels that fill one width's step: one bool per slot (none yet, so every
-    step function runs its stock code)."""
+    """The kernels that fill one width's step: one bool per slot (all off: every step
+    function runs its stock code)."""
+
+    # the FP8 MoE layers' expert-input quantization runs on the alternate stream
+    moe_quant_alt: bool = False
+    # the SWA layers' attention core runs the page-split kernels instead of FA4
+    swa_attn: bool = False
 
 
 class Facts(msgspec.Struct, frozen=True):
-    """What build found, which every rank must agree on (none yet)."""
+    """What build found, which every rank must agree on: a slot is on where it was
+    requested and built (all off: every step function runs its stock code)."""
+
+    moe_quant_alt: bool = False  # requested; SGLang's FP8 runner takes the pair
+    swa_attn: bool = False  # requested; the kernels built and warmed up
 
 
 def covered(widths: tuple[int, ...], tokens_per_request: int) -> tuple[int, ...]:
@@ -44,7 +53,8 @@ def slots(rows: int, facts: Facts) -> Slots:
     """The slots that fill a step of ``rows`` rows."""
     if not 0 < rows <= MAX_ROWS:
         raise ValueError(f"{rows} rows are outside the covered widths 4-{MAX_ROWS}")
-    return Slots()
+    # both slots serve every covered width (runtime.SLOT_TABLE: max_rows 32)
+    return Slots(moe_quant_alt=facts.moe_quant_alt, swa_attn=facts.swa_attn)
 
 
 def plan(widths: tuple[int, ...], facts: Facts) -> dict[int, Slots]:

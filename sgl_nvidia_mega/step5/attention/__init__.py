@@ -186,6 +186,13 @@ def step(layer, hidden_states, st):
             index_stream=a.alt_stream if use_indexer_alt_stream else None,
             **gate_kwargs,
         )
+    elif st.slots.swa_attn:
+        from sgl_nvidia_mega.step5.attention import swa_attn
+
+        # slot swa_attn: the page-split kernels in place of FA4 (the gate applied)
+        output = swa_attn.attend(
+            layer, q, gate, kv_write, st, gate_epilogue=use_gate_epilogue
+        )
     elif use_gate_epilogue:
         output = core(layer, q, k, v, st, head_gate=gate, save_kv_cache=save_kv_cache)
     else:

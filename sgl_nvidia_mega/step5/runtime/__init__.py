@@ -40,10 +40,29 @@ class SlotInfo(msgspec.Struct, frozen=True):
             raise ValueError(f"slot max_rows {self.max_rows} is outside 1-{MAX_ROWS}")
 
 
-# Stock path first: no slot exists yet. A slot lands as one row here, with its kernel
-# test at every width it serves (eager and graph replay), its unit tests of where it
-# serves and declines, and its numerics key.
-SLOT_TABLE: dict[str, SlotInfo] = {}
+# One row per slot, each with its kernel test at every width it serves (eager and graph
+# replay), its unit tests of where it serves and declines, and its numerics key. Both
+# are opt-in until their gates pass (bitwise: served identity + parity; tolerance: the
+# accuracy matrix against the switch-off arm).
+SLOT_TABLE: dict[str, SlotInfo] = {
+    # ffn/moe_quant_alt.py: the unchanged quantization kernel on the alternate stream
+    "moe_quant_alt": SlotInfo(
+        seam="ffn.experts", numerics="bitwise", max_rows=MAX_ROWS
+    ),
+    # attention/swa_attn.py: test/kernels/test_step5_swa_attn.py asserts these bounds
+    # against an FP64 reference and against SGLang's FA4 call on the same inputs
+    "swa_attn": SlotInfo(
+        seam="attention.core",
+        numerics="tolerance",
+        max_rows=MAX_ROWS,
+        tolerances={
+            "swa_attn.head_ulp_vs_fp64": 1.5,
+            "swa_attn.rel_fro_vs_fp64": 3e-3,
+            "swa_attn.head_ulp_vs_fa4": 2.0,
+            "swa_attn.rel_fro_vs_fa4": 4e-3,
+        },
+    ),
+}
 
 # The lists the harness and the other packages' conventions name (derived)
 SHIPPED_SLOTS = tuple(n for n, s in SLOT_TABLE.items() if s.shipped)
@@ -259,8 +278,24 @@ def build(model: Any, ctx: Any):
         "boundary.fused_rows": fusions.max_fused_rows,
         "boundary.multicast": fusions.allreduce_comm is not None,
     }
-    slots = slot_plan.plan(widths, slot_plan.Facts())
-    # each package's build adds the slots it built at some width (none exists yet);
+    from sgl_nvidia_mega.step5.attention import swa_attn
+    from sgl_nvidia_mega.step5.ffn import moe_quant_alt
+
+    # each requested slot's own checks of the loaded model; any reason stops every
+    # rank alike, before a kernel is built (no silent fallback to the stock code)
+    reasons = []
+    if "moe_quant_alt" in SLOTS:
+        reasons += moe_quant_alt.unsupported(model, bound)
+    if "swa_attn" in SLOTS:
+        reasons += swa_attn.unsupported(model)
+    if reasons:
+        raise RuntimeError("NVIDIA megakernel: " + "; ".join(reasons))
+    if "swa_attn" in SLOTS:
+        bound["swa_attn.kernels"] = swa_attn.build(widths)
+    facts = slot_plan.Facts(
+        moe_quant_alt="moe_quant_alt" in SLOTS, swa_attn="swa_attn" in SLOTS
+    )
+    slots = slot_plan.plan(widths, facts)
     # a requested slot that serves no width stops every rank alike
     built = {
         name

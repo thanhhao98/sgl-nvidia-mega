@@ -32,6 +32,7 @@ except ModuleNotFoundError:  # SGLang before sgl-project/sglang#45389
     from sglang.srt.megakernels import binding as sgl_binding
 
 from sgl_nvidia_mega.step5 import attention, boundary, ffn, runtime
+from sgl_nvidia_mega.step5.plan import Slots
 from sgl_nvidia_mega.step5.runtime.executor import Step5Verify
 
 Step5View = getattr(sgl_binding, "Step5View", None)
@@ -248,7 +249,9 @@ def test_the_attention_step_issues_what_sglang_issues(
                 out = a.forward(positions=pos, hidden_states=x, forward_batch=fb)
             else:
                 layer = SimpleNamespace(self_attn=a)
-                st = SimpleNamespace(fb=fb, positions=pos, step5=Step5View(backend))
+                st = SimpleNamespace(
+                    fb=fb, positions=pos, step5=Step5View(backend), slots=Slots()
+                )
                 out = attention.step(layer, x, st)
         log.append(("return", tag(out)))
         logs.append(list(log))
@@ -355,7 +358,9 @@ def test_the_ffn_step_issues_what_sglang_issues(kind, defer, can_fuse):
             if run == "sglang":
                 out = layer._forward_ffn(hidden_states=x, forward_batch=fb)
             else:
-                st = SimpleNamespace(fb=fb, bound={"ffn.runner_defers": True})
+                st = SimpleNamespace(
+                    fb=fb, bound={"ffn.runner_defers": True}, slots=Slots()
+                )
                 out = ffn.step(layer, x, st, defer=defer)
         log.append(("return", type(out).__name__, tag(getattr(out, "shared", out))))
         logs.append(list(log))

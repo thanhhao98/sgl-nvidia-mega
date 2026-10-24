@@ -40,9 +40,13 @@ SGLANG_READS = {
         "experts",
         "fuse_shared_finalize",
         "forward(num_token_non_padded)",
+        "layer_id",
     ),
     "srt/model_executor/forward_batch_info.py": ("num_token_non_padded",),
-    "srt/layers/moe/fused_moe_triton/layer.py": ("forward_deferred_finalize",),
+    "srt/layers/moe/fused_moe_triton/layer.py": (
+        "forward_deferred_finalize",
+        "forward_deferred_finalize(pre_quant_input)",
+    ),
     "srt/layers/moe/moe_runner/flashinfer_trtllm.py": (
         "FlashInferTrtllmDeferredFinalizeOutput",
         "finalize_flashinfer_trtllm_deferred_output",
@@ -85,11 +89,23 @@ def step(layer, hidden_states, st, defer: bool):
 
 
 def moe(layer, hidden_states, st):
-    """``Step5MoE.forward``, TP arm: (shared partial, routed output)."""
+    """``Step5MoE.forward``, TP arm: (shared partial, routed output). With slot
+    ``moe_quant_alt`` an FP8 layer's expert-input quantization runs on the alternate
+    stream after the fork (ffn/moe_quant_alt.py)."""
+    from sgl_nvidia_mega.step5 import FP8_EXPERT_LAYERS
+    from sgl_nvidia_mega.step5.ffn import moe_quant_alt
+
     m = layer.moe
     rows = hidden_states.shape[0]
     # forward_batch is the step's, its mode target verify (plan)
     overlap = m.alt_stream is not None and 0 < rows <= m.overlap_max_rows
+    pre_quant = st.slots.moe_quant_alt and layer.layer_id in FP8_EXPERT_LAYERS
+    if pre_quant and not overlap:
+        raise RuntimeError(
+            f"NVIDIA megakernel: slot moe_quant_alt at layer {layer.layer_id}, {rows} "
+            "rows: the shared expert does not overlap here, so there is no alternate "
+            "stream to quantize on"
+        )
     if overlap:
         current_stream = torch.cuda.current_stream()
         m.alt_stream.wait_stream(current_stream)
@@ -98,7 +114,11 @@ def moe(layer, hidden_states, st):
     else:
         shared_output = shared(layer, hidden_states, st)
     topk = router(layer, hidden_states, st)
-    routed_output = experts(layer, hidden_states, topk, st)
+    if pre_quant:
+        quant = moe_quant_alt.quantize(hidden_states, m.alt_stream, current_stream)
+        routed_output = experts(layer, hidden_states, topk, st, pre_quant_input=quant)
+    else:
+        routed_output = experts(layer, hidden_states, topk, st)
     if overlap:
         with torch.cuda.stream(m.alt_stream):
             shared_output = shared(layer, hidden_states, st)
@@ -123,15 +143,26 @@ def router(layer, hidden_states, st):
     )
 
 
-def experts(layer, hidden_states, topk, st):
-    """The routed experts: FP8 layers leave their finalize to the caller."""
+def experts(layer, hidden_states, topk, st, pre_quant_input=None):
+    """The routed experts: FP8 layers leave their finalize to the caller. With
+    ``pre_quant_input`` (slot moe_quant_alt) the runner uses that DeepSeekFp8 pair
+    instead of quantizing ``hidden_states`` itself."""
     m = layer.moe
     if (
         m.fuse_shared_finalize
         and hidden_states.dtype == torch.bfloat16
         and st.bound["ffn.runner_defers"]
     ):
+        if pre_quant_input is not None:
+            return m.experts.forward_deferred_finalize(
+                hidden_states, topk, pre_quant_input=pre_quant_input
+            )
         return m.experts.forward_deferred_finalize(hidden_states, topk)
+    if pre_quant_input is not None:
+        raise RuntimeError(
+            f"NVIDIA megakernel: slot moe_quant_alt at layer {layer.layer_id}: its "
+            "experts do not run FlashInfer TRT-LLM's deferred finalize"
+        )
     return m.experts(hidden_states, topk)
 
 

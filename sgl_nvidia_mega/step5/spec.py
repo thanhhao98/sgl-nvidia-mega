@@ -273,10 +273,14 @@ def binding_reasons() -> list[str]:
         import sglang.srt.kernel_plugins.megakernel.binding as binding
     except ModuleNotFoundError:  # SGLang before sgl-project/sglang#45389
         import sglang.srt.megakernels.binding as binding
+    members = dict(BINDING_MEMBERS)
+    if "swa_attn" in runtime.SLOTS:
+        # the slot reads the FA4 forward metadata (page table, sequence lengths)
+        members["Step5View"] = (*members["Step5View"], "swa_metadata")
     missing = [
         f"{owner}.{member}"
-        for owner, members in BINDING_MEMBERS.items()
-        for member in members
+        for owner, members_of in members.items()
+        for member in members_of
         if not hasattr(getattr(binding, owner, None), member)
     ]
     if missing:

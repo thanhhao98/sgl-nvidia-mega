@@ -55,7 +55,14 @@ With the megakernel on, the default 39 slots run: the ones above, the attention 
 
 The step is the plugin's own code over the modules SGLang loaded (`step5/runtime`): the embedding, then per layer the residual stream between the sublayers (`boundary/`), the attention (`attention/`: sliding-window layers and the sparse DSA layers with their CSA indexer) and the FFN (`ffn/`: the dense MLP of layers 0–2 and 91, the MoE of layers 3–90), then the logits (`logits/`). It copies the bodies of SGLang's Step-5 forward functions (the VL model's forward and its embedding routine, `Step5ForCausalLM.forward`, `Step5Model.forward`, `Step5DecoderLayer.forward` and `_forward_ffn`, `Step5Attention.forward` and `Step5MoE.forward`, each pinned by the digest of its code in `test/unit/test_contract.py`) and calls SGLang's own submodules, kernels and stage boundaries in SGLang's order, so it reproduces SGLang's verify step bit for bit. The attention reads the backend's decisions through the Step-5 view of SGLang's megakernel binding (`ForwardView.step5`).
 
-No slot exists yet: every op of a covered step is SGLang's, and the build allocates nothing. `SGLANG_NVIDIA_MEGAKERNEL_SLOTS` (comma-separated) will name the slots to run for tests and bisecting; empty or unset runs the stock step. Up to 32 rows SGLang's Step-5 path is one tier when its Step-5 multicast all-reduce communicator exists (TP4 and EP1 with the `trtllm` all-reduce fusion backend, on one node with multicast): both boundaries of every layer run its fused all-reduce kernel, and an FP8 MoE layer hands its finalize to the next layer's input kernel. Without the communicator SGLang runs FlashInfer's fusion at every boundary and finalizes the MoE inside the FFN. The stock step follows either, and the startup line names the tier: `boundaries Step-5 multicast at <= 32 rows`, or `FlashInfer boundaries, no multicast communicator (finalize in the FFN)`.
+With every slot off (the default: `SGLANG_NVIDIA_MEGAKERNEL_SLOTS` unset or empty) every op of a covered step is SGLang's and the build allocates nothing. `SGLANG_NVIDIA_MEGAKERNEL_SLOTS` (comma-separated) names the slots to run; both are opt-in until their gates pass:
+
+| Slot | Seam | Numerics | What it changes |
+|---|---|---|---|
+| `moe_quant_alt` | `ffn.experts` | bitwise | An FP8 MoE layer (3–87) quantizes the experts' input on the layer's alternate stream, beside the router GEMM: the same `per_token_group_quant_fp8` call on the same tensor, handed to the experts through `forward_deferred_finalize(pre_quant_input=)` (SGLang's DeepSeekFp8 runner must take a pre-quantized pair) |
+| `swa_attn` | `attention.core` | tolerance | The 69 sliding-window layers run a page-split attention kernel and its merge (`step5/sm103/attention/swa_split.py`, Triton) instead of FA4, which runs one CTA per request: up to 10 splits a request, 16 or 32 query rows a CTA, PDL with the pre-wait reads of the K / V written by earlier steps; bounds in `runtime.TOLERANCES["swa_attn"]`, asserted by `test/kernels/test_step5_swa_attn.py` |
+
+A requested slot that cannot run (an SGLang without the pre-quantized input, other expert quantization, deterministic inference, a layer shape the kernels do not take) stops the build with its reasons; a step whose SGLang path is not the one a slot replaces stops instead of running the slot on other inputs. Up to 32 rows SGLang's Step-5 path is one tier when its Step-5 multicast all-reduce communicator exists (TP4 and EP1 with the `trtllm` all-reduce fusion backend, on one node with multicast): both boundaries of every layer run its fused all-reduce kernel, and an FP8 MoE layer hands its finalize to the next layer's input kernel. Without the communicator SGLang runs FlashInfer's fusion at every boundary and finalizes the MoE inside the FFN. The stock step follows either, and the startup line names the tier: `boundaries Step-5 multicast at <= 32 rows`, or `FlashInfer boundaries, no multicast communicator (finalize in the FFN)`.
 
 ### Design
 
@@ -154,7 +161,7 @@ sgl-nvidia-mega/
 │   │   ├── logits/          # the head and the logits
 │   │   └── sm103/           # kernels and the build-time runner; no SGLang imports
 │   ├── kimi_k3/              # the Kimi K3 spec, adapter, executor and CuTe DSL kernels
-│   └── step5/             # Step-5-Preview: spec, plan, runtime, boundary, attention, ffn, logits (stock step)
+│   └── step5/             # Step-5-Preview: spec, plan, runtime, boundary, attention, ffn, logits, sm103 (kernels)
 ├── benchmark/             # the static decode table behind the speed numbers
 └── test/
     ├── unit/              # CPU: the plugin, the setup checks, the step loop and the SGLang contract
@@ -173,7 +180,7 @@ pytest test/e2e -k step5       # Step-5-Preview: 4 x GB300 or B300, with SGLANG_
 
 Kimi K3 GPU and end-to-end suites are not yet part of these commands.
 
-On an SGLang tree that lacks other models, run the Step-5 CPU tests alone: `pytest test/unit/test_step5_spec.py test/unit/test_step5_runtime.py test/unit/test_step5_steps.py` and `pytest test/unit/test_contract.py -k "step5 or binding_callable or TOLERATED_WRITES or TOLERATED_READS"`. The Step-5 end-to-end servers serve at most 8 requests, so every covered width has its decode graph; the serving gates (parity, served token identity, profiles and accuracy) run at the deployed `--max-running-requests 64`, since at 8 SGLang builds no MNNVL verify workspace for the steps past 32 rows.
+On an SGLang tree that lacks other models, run the Step-5 CPU tests alone: `pytest test/unit/test_step5_spec.py test/unit/test_step5_runtime.py test/unit/test_step5_steps.py test/unit/test_step5_slots.py` (GPU: `pytest test/kernels/test_step5_swa_attn.py`; the chain microbenchmark `python3 test/kernels/bench_step5_swa_attn.py`) and `pytest test/unit/test_contract.py -k "step5 or binding_callable or TOLERATED_WRITES or TOLERATED_READS"`. The Step-5 end-to-end servers serve at most 8 requests, so every covered width has its decode graph; the serving gates (parity, served token identity, profiles and accuracy) run at the deployed `--max-running-requests 64`, since at 8 SGLang builds no MNNVL verify workspace for the steps past 32 rows.
 
 ## Contributing
 
