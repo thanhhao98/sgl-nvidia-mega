@@ -6,16 +6,25 @@ calling, pinned on CPU against the installed SGLang.
 The megakernel lives outside SGLang, so it reads SGLang by name (its specs plug into
 ``sglang.kernels.plugin_kernels.nvidia``). Every module that imports from
 ``sglang`` lists what it reads in ``SGLANG_READS``. A refactor that renames one fails here, naming the file to
-repair, instead of failing at a GPU server's startup. The checks are static
-(AST): no module of this package is imported. A file that moved between SGLang
+repair, instead of failing at a GPU server's startup. A module whose stock step mirrors
+the body of an SGLang function lists it in ``SGLANG_MIRRORS`` with the digest of its
+code (its tokens without comments or docstring; a tuple of digests where the supported
+SGLangs differ), so a changed branch fails here too. The checks are static (AST and
+tokens): no module of this package is imported. A file that moved between SGLang
 versions is named by its locations newest first, ``"new.py|old.py"``; the first one
 the installed SGLang has is checked. Run it against each SGLang this package
-supports, and nightly against SGLang main.
+supports, and nightly against SGLang main. The Step-5 package reads SGLang's
+megakernel Step-5 binding view; against an SGLang without it, those reads and pins
+are skipped, naming it.
 """
 
 import ast
+import hashlib
+import io
+import tokenize
 from functools import lru_cache
 from pathlib import Path
+from typing import Optional
 
 import pytest
 import sglang
@@ -104,16 +113,25 @@ def test_every_sglang_import_is_declared(path):
 
 @pytest.mark.parametrize("path", READERS, ids=_id)
 def test_sglang_provides_what_the_plugin_reads(path):
-    missing = []
+    missing, unchecked = [], []
     for pattern, names in _declared(path).items():
         files = _files(pattern)
         assert files, f"{_id(path)}: no file matches {pattern}"
         provided = frozenset().union(*map(_provided, files))
+        if files == _files(BINDING) and not _has_step5_view():
+            optional = [n for n in names if n.split("(", 1)[0] in STEP5_VIEW_NAMES]
+            if optional:
+                unchecked.append(
+                    f"{NO_STEP5_VIEW}: {_id(path)} reads {sorted(optional)}"
+                )
+                names = [n for n in names if n not in optional]
         missing += [f"{pattern}: {n}" for n in names if n not in provided]
     assert not missing, (
         f"SGLang no longer provides what {_id(path)} reads; repair it and its "
         "SGLANG_READS:\n  " + "\n  ".join(missing)
     )
+    if unchecked:
+        pytest.skip("; ".join(unchecked))
 
 
 # What SGLang's binding file tolerates the megakernel still calling, writing and
@@ -142,7 +160,36 @@ PINNED_TOLERATED = {
         "capture-mode queries (get_is_capture_mode, is_in_breakable_cuda_graph)",
         "MegakernelBinding.engram_host_table",
     ),
+    "TOLERATED_STEP5_CALLABLES": (
+        "Step5View.swa_kv_write_target",
+        "Step5View.indexer_metadata",
+    ),
 }
+# What SGLang's megakernel Step-5 binding view adds to binding.py (ForwardView.step5,
+# Step5View): an SGLang without it skips these reads and pins
+STEP5_VIEW_PINS = ("TOLERATED_STEP5_CALLABLES",)
+STEP5_VIEW_NAMES = frozenset(
+    {
+        "step5",
+        "Step5View",
+        "swa_head_gate",
+        "dsa_head_gate",
+        "swa_metadata",
+        "swa_kv_write_target",
+        "indexer_metadata",
+    }
+)
+NO_STEP5_VIEW = "this SGLang has no megakernel Step-5 view (ForwardView.step5)"
+
+
+def _has_step5_view() -> bool:
+    return any(
+        isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == STEP5_VIEW_PINS[0] for t in node.targets
+        )
+        for node in _tree(_files(BINDING)[0]).body
+    )
 
 
 def _binding_tuple(name: str) -> tuple:
@@ -156,16 +203,22 @@ def _binding_tuple(name: str) -> tuple:
 
 @pytest.mark.parametrize("name", sorted(PINNED_TOLERATED))
 def test_the_binding_tolerates_exactly_the_pinned_sglang_code(name):
+    if name in STEP5_VIEW_PINS and not _has_step5_view():
+        pytest.skip(NO_STEP5_VIEW)
     assert _binding_tuple(name) == PINNED_TOLERATED[name]
 
 
 def test_every_binding_callable_the_plugin_reads_is_tolerated():
-    """A ForwardView / KvPoolView callable a module declares must be on SGLang's
-    tolerated list (the data fields and the pool's own getters need not be)."""
+    """A ForwardView / KvPoolView / Step5View callable a module declares must be on
+    SGLang's tolerated lists (the data fields and the pool's own getters need not be),
+    under any key that names the binding file."""
     callables = {
         name.split(".", 1)[1]
-        for name in PINNED_TOLERATED["TOLERATED_CALLABLES"]
-        if name.startswith(("ForwardView.", "KdaStepView.", "KvPoolView."))
+        for key in ("TOLERATED_CALLABLES", "TOLERATED_STEP5_CALLABLES")
+        for name in PINNED_TOLERATED[key]
+        if name.startswith(
+            ("ForwardView.", "KdaStepView.", "KvPoolView.", "Step5View.")
+        )
     }
     data = {
         "ForwardView",
@@ -200,9 +253,98 @@ def test_every_binding_callable_the_plugin_reads_is_tolerated():
         "forward_view",
         "engram_history",
         "engram_host_table",
+        # the Step-5 view and its data: the backend's head-gate decisions and the SWA
+        # layers' attention metadata
+        "step5",
+        "Step5View",
+        "swa_head_gate",
+        "dsa_head_gate",
+        "swa_metadata",
     }
     for path in READERS:
-        names = {n.split("(", 1)[0] for n in _declared(path).get(BINDING, ())}
+        names = {
+            n.split("(", 1)[0]
+            for pattern, declared in _declared(path).items()
+            if _files(pattern) == _files(BINDING)
+            for n in declared
+        }
         untolerated = names - callables - data
         untolerated = {n for n in untolerated if not n.startswith("get_")}
         assert not untolerated, f"{_id(path)}: {sorted(untolerated)}"
+
+
+def _mirrors(path: Path) -> dict:
+    """The module's ``SGLANG_MIRRORS``, or {} without one."""
+    for node in _tree(path).body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(t, ast.Name) and t.id == "SGLANG_MIRRORS" for t in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    return {}
+
+
+def mirror_digest(path: Path, qualname: str) -> Optional[str]:
+    """The digest of a function's code in ``path`` (``Class.method`` or ``function``):
+    its decorators, signature and body as tokens, without comments, blank lines or
+    docstring; None when the file does not define it."""
+    scope = _tree(path).body
+    *owners, name = qualname.split(".")
+    for owner in owners:
+        cls = next(
+            (n for n in scope if isinstance(n, ast.ClassDef) and n.name == owner), None
+        )
+        if cls is None:
+            return None
+        scope = cls.body
+    node = next(
+        (
+            n
+            for n in scope
+            if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name
+        ),
+        None,
+    )
+    if node is None:
+        return None
+    first = min([node.lineno, *(d.lineno for d in node.decorator_list)])
+    lines = path.read_text().splitlines(keepends=True)[first - 1 : node.end_lineno]
+    doc = node.body[0]
+    has_doc = (
+        isinstance(doc, ast.Expr)
+        and isinstance(doc.value, ast.Constant)
+        and isinstance(doc.value.value, str)
+    )
+    skip = (doc.lineno - first + 1, doc.end_lineno - first + 1) if has_doc else None
+    digest = hashlib.sha256()
+    for tok in tokenize.generate_tokens(io.StringIO("".join(lines)).readline):
+        if tok.type in (tokenize.COMMENT, tokenize.NL):
+            continue
+        if skip and skip[0] <= tok.start[0] and tok.end[0] <= skip[1]:
+            continue
+        # indentation depth is structure, not text
+        text = "" if tok.type in (tokenize.INDENT, tokenize.NEWLINE) else tok.string
+        digest.update(f"{tok.type}:{text}\n".encode())
+    return digest.hexdigest()[:16]
+
+
+MIRRORS = [
+    (path, key, digest)
+    for path in sorted(PACKAGE.rglob("*.py"))
+    for key, digest in _mirrors(path).items()
+]
+
+
+@pytest.mark.parametrize(
+    "path, key, digest", MIRRORS, ids=[f"{_id(p)}::{k}" for p, k, _ in MIRRORS]
+)
+def test_the_mirrored_sglang_code_is_unchanged(path, key, digest):
+    pattern, qualname = key.split(":")
+    files = _files(pattern)
+    assert len(files) == 1, f"{_id(path)}: {pattern} matches {len(files)} files"
+    got = mirror_digest(files[0], qualname)
+    assert got is not None, f"{_id(path)}: SGLang no longer defines {key}"
+    assert got in ((digest,) if isinstance(digest, str) else digest), (
+        f"SGLang changed {key}, whose body {_id(path)} mirrors: re-read it, update "
+        f"the mirror, then pin {got!r} in its SGLANG_MIRRORS (a tuple where the "
+        "supported SGLangs differ)"
+    )
