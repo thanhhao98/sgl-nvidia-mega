@@ -65,7 +65,7 @@ def head_groups(bs: int) -> int:
 
 
 @triton.jit(do_not_specialize=["pt_stride"])
-def _split_kernel(
+def _step5_swa_split_kernel(
     Q,
     K,
     V,
@@ -160,7 +160,7 @@ def _split_kernel(
 
 
 @triton.jit
-def _merge_kernel(
+def _step5_swa_merge_kernel(
     PO,
     PM,
     PL,
@@ -263,7 +263,7 @@ class SwaVerifyAttention:
         if out is None:
             out = torch.empty(bs * T, H * D, dtype=torch.bfloat16, device=q.device)
         pdl = {"launch_pdl": True} if self.pdl else {}
-        _split_kernel[(bs, NUM_SPLITS, head_groups(bs))](
+        _step5_swa_split_kernel[(bs, NUM_SPLITS, head_groups(bs))](
             q,
             k_rows,
             v_rows,
@@ -288,7 +288,7 @@ class SwaVerifyAttention:
             num_stages=1,
             **pdl,
         )
-        _merge_kernel[(bs, H, D // MERGE_DT)](
+        _step5_swa_merge_kernel[(bs, H, D // MERGE_DT)](
             self.po,
             self.pm,
             self.pl,
