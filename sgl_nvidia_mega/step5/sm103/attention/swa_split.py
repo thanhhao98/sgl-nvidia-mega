@@ -27,13 +27,14 @@ wait, Q and the rows of this step's 4 tokens, which the PDL predecessor (the fus
 q/k-norm + RoPE + SWA store) writes. One QK^T, the window mask, a page-local softmax in
 the log2 domain, PV; FP32 partials (O, max, sum). No page outside the window is read:
 SWA eviction may have freed it.
-Merge: grid (bs, 16); CTA (r, h) loads every split's partials of head h's 4 rows in one
-round, merges them in fixed split order (deterministic, batch-invariant), applies the
-gate and rounds once; it triggers its dependents at entry so the o_proj GEMM can stream
-its weights while the split runs out.
+Merge: grid (bs, 16, 3); CTA (r, h, t) loads every split's partials of head h's 4 rows
+for dims [64 t, 64 t + 64) in one round, merges them in fixed split order
+(deterministic), applies the gate and rounds once; it triggers its dependents at entry
+so the o_proj GEMM can stream its weights while the split runs out.
 
-Head groups: 4 (16 rows a CTA) at batch 1-2, 2 above (B300, chain microbenchmark
-test/kernels/bench_step5_swa_attn.py: one wave of CTAs wins).
+Head groups: 4 (16 rows a CTA) at batch 1-2, 2 above; the merge tiled over the head
+dims with 2 warps (B300, chain microbenchmark test/kernels/bench_step5_swa_attn.py: one
+wave of split CTAs, and fewer loads a merge CTA, win).
 """
 
 from __future__ import annotations
@@ -54,7 +55,8 @@ SCALE_LOG2 = D**-0.5 * 1.4426950408889634
 NUM_SPLITS = (PAGE - 1 + WINDOW_LEFT + T + PAGE - 1) // PAGE
 SPLITS_P2 = triton.next_power_of_2(NUM_SPLITS)
 SPLIT_WARPS = 4
-MERGE_WARPS = 8
+MERGE_DT = 64  # head dims a merge CTA reduces
+MERGE_WARPS = 2
 
 
 def head_groups(bs: int) -> int:
@@ -167,20 +169,18 @@ def _merge_kernel(
     T: tl.constexpr,
     H: tl.constexpr,
     D: tl.constexpr,
-    D_LO: tl.constexpr,
-    D_HI: tl.constexpr,
+    DT: tl.constexpr,
     NUM_SPLITS: tl.constexpr,
     SP: tl.constexpr,
     USE_PDL: tl.constexpr,
 ):
     r = tl.program_id(0).to(tl.int64)
     h = tl.program_id(1)
+    d = tl.program_id(2) * DT + tl.arange(0, DT)  # this CTA's slice of the head dims
     M: tl.constexpr = T * H
     rows = tl.arange(0, T) * H + h
     offs_s = tl.arange(0, SP)
     smask = offs_s < NUM_SPLITS
-    d_lo = tl.arange(0, D_LO)
-    d_hi = D_LO + tl.arange(0, D_HI)
     # the gate is the q/k-norm kernel's output, complete before any split passed its
     # wait; this grid starts only after every split CTA exited
     gates = tl.load(GATE + r * M + rows).to(tl.float32)
@@ -191,26 +191,19 @@ def _merge_kernel(
     idx = (r * NUM_SPLITS + offs_s[None, :]) * M + rows[:, None]
     m_s = tl.load(PM + idx, mask=smask[None, :], other=float("-inf"))
     l_s = tl.load(PL + idx, mask=smask[None, :], other=0.0)
-    o_lo = tl.load(
-        PO + idx[:, :, None] * D + d_lo[None, None, :],
-        mask=smask[None, :, None],
-        other=0.0,
-    )
-    o_hi = tl.load(
-        PO + idx[:, :, None] * D + d_hi[None, None, :],
+    o = tl.load(
+        PO + idx[:, :, None] * D + d[None, None, :],
         mask=smask[None, :, None],
         other=0.0,
     )
     mx = tl.max(m_s, axis=1)
     w = tl.exp2(m_s - tl.where(mx == float("-inf"), 0.0, mx)[:, None])
     denom = tl.sum(w * l_s, axis=1)
-    acc_lo = tl.sum(o_lo * w[:, :, None], axis=1)
-    acc_hi = tl.sum(o_hi * w[:, :, None], axis=1)
+    acc = tl.sum(o * w[:, :, None], axis=1)
     sig = 1.0 / (1.0 + tl.exp2(-gates * 1.4426950408889634))
     scale = tl.where(denom > 0.0, sig / denom, 0.0)  # an empty row -> 0
     out = OUT + (r * M + rows)[:, None] * D
-    tl.store(out + d_lo[None, :], (acc_lo * scale[:, None]).to(tl.bfloat16))
-    tl.store(out + d_hi[None, :], (acc_hi * scale[:, None]).to(tl.bfloat16))
+    tl.store(out + d[None, :], (acc * scale[:, None]).to(tl.bfloat16))
 
 
 class SwaVerifyAttention:
@@ -295,7 +288,7 @@ class SwaVerifyAttention:
             num_stages=1,
             **pdl,
         )
-        _merge_kernel[(bs, H)](
+        _merge_kernel[(bs, H, D // MERGE_DT)](
             self.po,
             self.pm,
             self.pl,
@@ -304,8 +297,7 @@ class SwaVerifyAttention:
             T=T,
             H=H,
             D=D,
-            D_LO=D_LO,
-            D_HI=D_HI,
+            DT=MERGE_DT,
             NUM_SPLITS=NUM_SPLITS,
             SP=SPLITS_P2,
             USE_PDL=self.pdl,
