@@ -20,6 +20,8 @@ SPECS = (
     # the DSpark draft: SGLang's forward, the megakernel's folded proposal
     ("DeepseekV4ForCausalLMDSpark", "sgl_nvidia_mega.deepseek_v41.draft:SPEC"),
     ("KimiK3ForConditionalGeneration", "sgl_nvidia_mega.kimi_k3.spec:SPEC"),
+    # Step-5's VL checkpoint; its multi-layer MTP draft (Step5MTP) runs SGLang's forward
+    ("Step5ForConditionalGeneration", "sgl_nvidia_mega.step5.spec:SPEC"),
 )
 
 # Test only: with SGLANG_NVIDIA_MEGAKERNEL_PARITY_SORT_TOPK=1, the composition check
