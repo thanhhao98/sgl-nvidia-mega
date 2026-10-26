@@ -60,7 +60,7 @@ gives them a width:
 
 | Slot | Rows | Numerics | Kernel |
 | --- | --- | --- | --- |
-| `moe_nofill` (default) | 1–128 | bitwise | The routed experts' per-token NVFP4 input quantized into buffers built once, without FlashInfer's two fill launches per MoE layer |
+| `moe_nofill` (default) | 1–128 | bitwise | The routed experts' per-token NVFP4 input quantized into buffers built once, without the chain's fill launch (its global scale's `torch.full`) and allocations per MoE layer |
 | `hop_mxfp8` (default) | 1–128 | bitwise | SGLang's push-plane all-reduce + residual + RMSNorm kernel at the attention input also writes the qkv\|index GEMM's MXFP8 input (its MXFP8 epilogue), replacing the quantize launch per layer |
 | `hop_ffn` (opt-in, needs `moe_nofill`) | 1–128 | bitwise | The same kernel at the FFN input also writes the dense MLP's or shared expert's MXFP8 input and a MoE layer's per-token NVFP4 input |
 | `qk_store` (opt-in) | 1–128 | bitwise | The q/k/index norm + RoPE with the FP8 q epilogue and the NVFP4 K / V / index-K page store in one kernel, launched by SGLang's KV pool |

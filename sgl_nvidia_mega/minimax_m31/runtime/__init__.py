@@ -44,7 +44,8 @@ SGLANG_READS = {
 # test_all_reduce_residual_norm_quant.py) and by the model's composition check at
 # every covered width (GB300, 2026-10-20):
 # - moe_nofill: the routed experts' per-token NVFP4 input quantized into buffers
-#   built once, without the two fill launches per MoE layer
+#   built once, without the chain's fill launch (its global scale's torch.full) and
+#   allocations per MoE layer
 # - hop_mxfp8: the attention-input boundary kernel also writes the qkv|index GEMM's
 #   MXFP8 input, replacing the separate quantize launch per layer
 SHIPPED_SLOTS: tuple[str, ...] = ("moe_nofill", "hop_mxfp8")
@@ -59,11 +60,11 @@ SHIPPED_SLOTS: tuple[str, ...] = ("moe_nofill", "hop_mxfp8")
 #   K/V/index-K page store in one kernel per layer, which SGLang's KV pool launches
 #   (attention.qk_store), bitwise (its GPU test,
 #   test/kernels/test_minimax_m31_qk_store.py, and a check against SGLang's two
-#   kernels at build); opt-in until the model's composition check has run it on GPU
+#   kernels at build); the model's composition check passes with it (GB300, 2026-10-26)
 # - hop_ffn: the FFN-input boundary kernel also writes the FFN's quantized inputs
 #   (the MXFP8 of the dense MLP's / shared expert's gate_up, a MoE layer's per-token
-#   NVFP4 for its routed experts), replacing their quantize launches. Bitwise by
-#   construction; ships once its GPU test and the composition check pass on GB300
+#   NVFP4 for its routed experts), replacing their quantize launches. Bitwise; its
+#   GPU test and the model's composition check pass on GB300 (2026-10-26)
 OPT_IN_SLOTS: tuple[str, ...] = ("attn_ll", "qk_store", "hop_ffn")
 # slot -> the slot it needs
 NEEDS: dict[str, str] = {

@@ -9,7 +9,7 @@ Stock: SGLang's ``MiniMaxM3MLP`` / ``MiniMaxM3MoE`` modules.
 
 Slot ``moe_nofill`` (``moe_nofill.py``, bitwise): an MoE layer runs SGLang's own calls
 in SGLang's order, but quantizes the routed experts' NVFP4 input into buffers built
-once, without the chain's two fill launches. A step that misses one of the slot's
+once, without the chain's fill launch and allocations. A step that misses one of the slot's
 preconditions runs SGLang's module for that layer.
 
 Slot ``hop_ffn`` (``boundary/hop_ffn.py``, bitwise; needs moe_nofill): the FFN input

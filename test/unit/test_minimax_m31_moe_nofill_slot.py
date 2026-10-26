@@ -6,9 +6,10 @@ SGLang's own MoE code runs on small fake pieces: MiniMaxM3MoE.forward_normal, th
 experts' deferred-finalize path, the compressed-tensors method, MiniMaxM3Nvfp4MoE's
 apply_weights, the runner and fused_experts_none_to_flashinfer_trtllm_fp4 are SGLang's;
 the shared expert, router, top-k and dispatcher record their calls; FlashInfer is a CPU
-fake whose per-token quantize host code mirrors FlashInfer 0.7.0.post1 and whose kernels
+fake whose per-token quantize host code mirrors FlashInfer 0.7.2 and whose kernels
 compute deterministic bytes from all their inputs. Checked: the slot's step makes
-SGLang's launches on SGLang's streams with SGLang's arguments, minus the two fills, and
+SGLang's launches on SGLang's streams with SGLang's arguments, minus the fill and the
+allocations, and
 returns the same handoff; its build (with the check that FlashInfer's own call compiles
 the kernel the slot launches, and the refusal of hooked modules), plan and fallbacks.
 The kernels themselves are checked on GPU

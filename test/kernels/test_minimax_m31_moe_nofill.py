@@ -8,8 +8,8 @@ every served width (1-16 rows, 8-128 rows step 8):
   backend="cute-dsl", sfLayout=layout_linear) as SGLang's routed MoE calls it: the
   kernel FlashInfer compiles for that call is the one the slot launches (its key), and
   the FP4 bytes, the block-scale bytes and the per-token scales match bit for bit,
-  written over garbage-filled buffers (so the zero fill SGLang's chain launches is not
-  needed), eagerly and replayed from a CUDA graph, under FlashInfer's default,
+  written over garbage-filled buffers (so no buffer needs a zero fill), eagerly and
+  replayed from a CUDA graph, under FlashInfer's default,
   exact-math and 4over6 environments; and the build's own check (PerTokenQuant.verify);
 - the slot's routed core (moe_nofill.routed_fp4) against SGLang's
   fused_experts_none_to_flashinfer_trtllm_fp4 under the deferred finalize, on random
@@ -26,7 +26,8 @@ every served width (1-16 rows, 8-128 rows step 8):
   routed experts on one alternate stream, the second layer reading the first layer's
   finalized output, and both layers on one set of slot buffers: every handoff field and
   the final output bit for bit, replayed over garbage-filled buffers;
-- the launches: the slot's chain makes exactly two fewer fill launches than SGLang's.
+- the launches: the slot's chain makes exactly one fill launch fewer than SGLang's (its
+  global scale's torch.full; FlashInfer 0.7.0 also zero-filled the block scales).
 
 A bitwise check needs SGLang's own result to repeat bit for bit run to run; when it does
 not, the check fails and says so (it never passes on a tolerance).
