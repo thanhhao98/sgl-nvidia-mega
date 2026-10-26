@@ -20,6 +20,11 @@ SPECS = (
     # the DSpark draft: SGLang's forward, the megakernel's folded proposal
     ("DeepseekV4ForCausalLMDSpark", "sgl_nvidia_mega.deepseek_v41.draft:SPEC"),
     ("KimiK3ForConditionalGeneration", "sgl_nvidia_mega.kimi_k3.spec:SPEC"),
+    # MiniMax M3.1-Flash; the DSpark draft keeps SGLang's forward
+    (
+        "MiniMaxM3SparseForConditionalGeneration",
+        "sgl_nvidia_mega.minimax_m31.spec:SPEC",
+    ),
 )
 
 # Test only: with SGLANG_NVIDIA_MEGAKERNEL_PARITY_SORT_TOPK=1, the composition check

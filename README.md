@@ -16,11 +16,14 @@ The package loads as an SGLang [general plugin](https://github.com/sgl-project/s
 | --- | --- | --- | --- |
 | DeepSeek-V4.1-Flash | GB300 (SM103) | 4 | DSpark target verify steps of 1 to 384 rows (batch 1 to 64 at 6 rows a request) |
 | Kimi K3 (packed MXFP4) | GB300 (SM103) | 8 | One-token decode steps of 1–8, 16, 32 and 64 rows |
+| MiniMax-M3.1-Flash | GB300 (SM103) | 4 | DSpark target verify steps of 8 to 128 rows (batch 1 to 16 at 8 rows a request) and one-token decode steps of 1 to 16 rows |
 
 For DeepSeek-V4.1-Flash, larger verify steps, prefill and extend run SGLang's
 standard path. The DSpark draft step runs on the plugin's draft spec. For Kimi
 K3, the plugin covers the 93-layer language model (24 MLA and 69 KDA layers) at
-the listed widths; every other call runs the standard path.
+the listed widths; every other call runs the standard path. For
+MiniMax-M3.1-Flash, prefill, extend, wider steps and the DSpark draft step run
+SGLang's standard path.
 
 The Kimi K3 adapter is experimental. On the pinned GB300/TP8 configuration
 below, every listed CUDA-graph width and padding boundary passed dummy-weight
@@ -48,6 +51,25 @@ The step is the plugin's own code over the weights SGLang loaded (`deepseek_v41/
 
 With the megakernel on, the default 39 slots run: the ones above, the attention chain, hop B's triggers, and the DSpark draft step's 16 slots. `SGLANG_NVIDIA_MEGAKERNEL_SLOTS` (comma-separated) overrides that list for tests and bisecting; empty runs every step function's stock code. The opt-in slots run only when listed there: `target_lm_head` (the target's LM head on the low-M kernel at 1-8 rows), `lm_head_pinned_tactic` (both low-M LM heads on one fixed tactic per row count, untuned), `hop_b_quad_trigger` (hop B's finalize-publish launches its consumer right after its own wait, batch 1 only), `hop_b_cap16` and `draft_embed`.
 
+### What a covered MiniMax-M3.1-Flash step runs
+
+The step is the plugin's executor over SGLang's own modules and weights (`minimax_m31/runtime`): the push-plane
+boundaries (`boundary/`), the attention (`attention/`), the MoE (`moe/`) and the logits (`logits/`). With every slot off
+it reproduces SGLang's verify and decode steps bit for bit; the slots put a kernel in where the slot plan (`plan.py`)
+gives them a width:
+
+| Slot | Rows | Numerics | Kernel |
+| --- | --- | --- | --- |
+| `moe_nofill` (default) | 1–128 | bitwise | The routed experts' per-token NVFP4 input quantized into buffers built once, without FlashInfer's two fill launches per MoE layer |
+| `hop_mxfp8` (default) | 1–128 | bitwise | SGLang's push-plane all-reduce + residual + RMSNorm kernel at the attention input also writes the qkv\|index GEMM's MXFP8 input (its MXFP8 epilogue), replacing the quantize launch per layer |
+| `hop_ffn` (opt-in, needs `moe_nofill`) | 1–128 | bitwise | The same kernel at the FFN input also writes the dense MLP's or shared expert's MXFP8 input and a MoE layer's per-token NVFP4 input |
+| `qk_store` (opt-in) | 1–128 | bitwise | The q/k/index norm + RoPE with the FP8 q epilogue and the NVFP4 K / V / index-K page store in one kernel, launched by SGLang's KV pool |
+| `attn_ll` (opt-in) | 1–8 | tolerance | The qkv\|index GEMM on FlashInfer's low-latency MXFP8 GEMM; with `hop_mxfp8` the boundary kernel lets it launch at its entry |
+
+`SGLANG_NVIDIA_MEGAKERNEL_SLOTS` (comma-separated) overrides the default list; empty runs SGLang's step code
+throughout. A slot that changes a reduction order (`attn_ll`) is judged by accuracy against the switch-off server, not
+by per-step parity.
+
 ### Design
 
 - **Built at load.** Buffers, kernels and tactics for every covered width are allocated and compiled when the model is loaded, before the KV cache is sized. Nothing is compiled or allocated inside a step.
@@ -57,6 +79,8 @@ With the megakernel on, the default 39 slots run: the ones above, the attention 
   0x0, so no token from a failed step is returned. Kimi K3 validates SGLang's
   finite build deadline and compiles it into all six reachable TP8 remote-wait
   paths; expiry likewise stores through address 0x0 and traps.
+  MiniMax-M3.1-Flash adds no wait of its own: its cross-GPU waits are SGLang's
+  push-plane all-reduce kernels.
 - **No silent fallback.** With `--enable-nvidia-megakernel`, an unsupported setup stops the server at startup, before the weights load, listing every reason; a model the loaded weights do not fit stops every rank after the load.
 
 ## Quick Start
@@ -66,6 +90,11 @@ With the megakernel on, the default 39 slots run: the ones above, the attention 
 - An SGLang with the megakernels framework (`sglang.kernels.plugin_kernels.nvidia`, or `sglang.srt.megakernels` before sgl-project/sglang#45389; `--enable-nvidia-megakernel`)
 - SGLang's CUDA 13 image: FlashInfer (its low-latency block-scaled GEMM as in 0.7.0 to 0.7.2), CuTe DSL (`nvidia-cutlass-dsl`) and the CUDA Python bindings
 - DeepSeek-V4.1-Flash: 4 x GB300
+- MiniMax-M3.1-Flash: 4 x GB300, the `minimax_m3_nvfp4` checkpoint
+  (`MiniMaxAI/MiniMax-M3.1-Flash`), SGLang with the MiniMax-M3.1-Flash model and its
+  CUDA 13.4 image, the push-plane boundary kernel's MXFP8 and NVFP4 epilogues and,
+  for `qk_store`, the fused q/k norm + RoPE + NVFP4 KV store;
+  `--moe-runner-backend flashinfer_trtllm_routed` (EP 1) and decode CUDA graphs
 - Kimi K3: 8 x GB300 (SM103), BF16, context length 8192, TP8 and DP1,
   FP8 E4M3 KV cache with page size 64, `trtllm_mla` for prefill and decode,
   `flashinfer_mxfp4` with default precision, and full decode CUDA graphs
@@ -98,6 +127,21 @@ python -m sglang.launch_server \
 
 The three environment variables are required by the DeepSeek-V4.1 spec; without them the server stops at startup, naming each.
 
+MiniMax-M3.1-Flash (DSpark draft from the checkpoint's `dspark/` folder):
+
+```bash
+SGLANG_RAGGED_VERIFY_MODE=static \
+python -m sglang.launch_server \
+  --model-path MiniMaxAI/MiniMax-M3.1-Flash \
+  --trust-remote-code \
+  --tp 4 \
+  --moe-runner-backend flashinfer_trtllm_routed \
+  --speculative-algorithm DSPARK \
+  --speculative-dspark-block-size 7 \
+  --reasoning-parser minimax-m3 --tool-call-parser minimax-m3 \
+  --enable-nvidia-megakernel
+```
+
 ## Repository Structure
 
 ```text
@@ -115,7 +159,8 @@ sgl-nvidia-mega/
 │   │   ├── engram/          # the Engram layers
 │   │   ├── logits/          # the head and the logits
 │   │   └── sm103/           # kernels and the build-time runner; no SGLang imports
-│   └── kimi_k3/              # the Kimi K3 spec, adapter, executor and CuTe DSL kernels
+│   ├── kimi_k3/              # the Kimi K3 spec, adapter, executor and CuTe DSL kernels
+│   └── minimax_m31/          # the MiniMax-M3.1-Flash spec, plan, executor, step packages and sm100/ kernels
 ├── benchmark/             # the static decode table behind the speed numbers
 └── test/
     ├── unit/              # CPU: the plugin, the setup checks, the step loop and the SGLang contract
@@ -131,7 +176,11 @@ pytest test/kernels            # DeepSeek-V4.1-Flash: 4 x GB300
 pytest test/e2e                # DeepSeek-V4.1-Flash: 4 x GB300, with SGLANG_NVIDIA_MEGAKERNEL_E2E_MODEL_PATH set
 ```
 
-Kimi K3 GPU and end-to-end suites are not yet part of these commands.
+Kimi K3 GPU and end-to-end suites are not yet part of these commands. The
+MiniMax-M3.1-Flash kernel tests (`test/kernels/test_minimax_m31_*.py`) and
+end-to-end tests (`test/e2e/test_minimax_m31_*.py`) need 4 x GB300; the end-to-end
+tests serve `MiniMaxAI/MiniMax-M3.1-Flash` unless
+`SGLANG_NVIDIA_MEGAKERNEL_E2E_MODEL_PATH` names another copy.
 
 ## Contributing
 

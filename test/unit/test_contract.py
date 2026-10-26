@@ -142,6 +142,10 @@ PINNED_TOLERATED = {
         "capture-mode queries (get_is_capture_mode, is_in_breakable_cuda_graph)",
         "MegakernelBinding.engram_host_table",
     ),
+    # MiniMax-M3.1's fused q/k norm + RoPE + NVFP4 K / V / index-K write
+    "TOLERATED_NVFP4_POOL_CALLABLES": (
+        "KvPoolView.set_kv_index_buffer_fused_qknorm_rope",
+    ),
 }
 
 
@@ -164,7 +168,10 @@ def test_every_binding_callable_the_plugin_reads_is_tolerated():
     tolerated list (the data fields and the pool's own getters need not be)."""
     callables = {
         name.split(".", 1)[1]
-        for name in PINNED_TOLERATED["TOLERATED_CALLABLES"]
+        for name in (
+            *PINNED_TOLERATED["TOLERATED_CALLABLES"],
+            *PINNED_TOLERATED["TOLERATED_NVFP4_POOL_CALLABLES"],
+        )
         if name.startswith(("ForwardView.", "KdaStepView.", "KvPoolView."))
     }
     data = {
