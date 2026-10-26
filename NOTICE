@@ -4,8 +4,10 @@ Licensed under the Apache License 2.0.
 
 Portions are adapted from SGLang (https://github.com/sgl-project/sglang): the stock
 decode step of DeepSeek-V4.1 (the layer loop, the mHC boundaries, the attention, the
-MoE, Engram and the head) follows SGLang's own model code (Apache License 2.0,
-Copyright SGLang Team). Each adapted file names its origin in its header.
+MoE, Engram and the head) and that of MiniMax-M3.1 (the layer loop, the push-plane
+boundaries, the attention, the MoE and the logits) follow SGLang's own model code
+(Apache License 2.0, Copyright SGLang Team). Each adapted file names its origin in its
+header.
 
 Portions are adapted from FlashInfer (https://github.com/flashinfer-ai/flashinfer):
 the Lamport all-reduce primitives and the low-latency all-reduce (Apache License
@@ -15,7 +17,11 @@ NVIDIA CORPORATION & AFFILIATES; the full notice is kept in that file). Each
 adapted file names its origin in its header. The Kimi K3 split-K GEMM in
 sgl_nvidia_mega/kimi_k3/cutedsl/gemm/splitk.py is adapted from FlashInfer's
 flashinfer/gemm/kernels/dense_bf16_gemm_sm100_splitk.py at v0.7.0.post1
-(Apache License 2.0). FlashInfer's NOTICE file reads:
+(Apache License 2.0). The MiniMax-M3.1 per-token NVFP4 quantize in
+sgl_nvidia_mega/minimax_m31/moe/moe_nofill.py (at v0.7.2) and boundary/hop_ffn.py (at
+v0.7.0.post1) is adapted from FlashInfer's
+flashinfer/quantization/kernels/nvfp4_quantize.py (Apache License 2.0). FlashInfer's
+NOTICE file reads:
 
 FlashInfer
 Copyright 2025-2026 NVIDIA
