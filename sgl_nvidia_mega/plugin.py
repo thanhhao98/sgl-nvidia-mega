@@ -23,11 +23,21 @@ SPECS = (
     # The MTP draft offers EAGLE draft-loop and draft-extend entries.
     ("Qwen3_5ForCausalLMMTP", "sgl_nvidia_mega.qwen3_5.draft:SPEC"),
     ("KimiK3ForConditionalGeneration", "sgl_nvidia_mega.kimi_k3.spec:SPEC"),
-    # GLM-5.3 and GLM-5.2: the MTP target verify step
+    # GLM-5.3 and GLM-5.2: the MTP target verify step (TP16 on Rubin: glm5_3/sm107)
     ("GlmMoeDsaForCausalLM", "sgl_nvidia_mega.glm5_3.spec:SPEC"),
     # the NextN draft (ModelConfig names a GLM draft's architecture this way)
     ("GlmMoeDsaForCausalLMNextN", "sgl_nvidia_mega.glm5_3.draft:SPEC"),
     ("MuseSparkForConditionalGeneration", "sgl_nvidia_mega.muse_spark.spec:SPEC"),
+    # MiniMax-M3.1-Flash (NVFP4) and its DSpark draft
+    (
+        "MiniMaxM3SparseForConditionalGeneration",
+        "sgl_nvidia_mega.minimax_m31.spec:SPEC",
+    ),
+    ("DSparkMiniMaxDraftModel", "sgl_nvidia_mega.minimax_m31.draft:SPEC"),
+    # Kimi K3.1: the DFlash target verify step and the sparse decode step
+    ("KimiK31ForConditionalGeneration", "sgl_nvidia_mega.kimi_k31.spec:SPEC"),
+    # the Kimi K3.1 DFlash2 draft: its decoder layers on the megakernel chain
+    ("DFlash2DraftModel", "sgl_nvidia_mega.kimi_k31.draft.serving:SPEC"),
 )
 
 # Test only: with SGLANG_NVIDIA_MEGAKERNEL_PARITY_SORT_TOPK=1, the composition check
@@ -82,3 +92,9 @@ def register() -> None:
 
         for target, kind, hook in TEST_HOOKS:
             HookRegistry.register(target, pkgutil.resolve_name(hook), HookType[kind])
+    from sgl_nvidia_mega.spec_step import switches
+
+    if switches.any_enabled():
+        from sgl_nvidia_mega.spec_step import hooks
+
+        hooks.register()

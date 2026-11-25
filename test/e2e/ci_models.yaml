@@ -2,6 +2,12 @@
 # gpu and gpus: the GPU and how many of them on one host the model's tests need.
 # A runner with another GPU or fewer GPUs skips the model and logs why. A new
 # model adds its entry here; SGLang's workflow needs no change.
+# Only models supported by the available four-GPU GB300 runner belong here.
+# Qwen3.5 requires eight GPUs and is not included in this CI configuration.
+#
+# Each model's key is its CI label: run-ci-sglang:<key> on a PR runs only that
+# model, and run-ci-sglang runs them all. Keys use lowercase letters, digits and
+# underscores. sync-ci-labels.yml creates the label once the entry is on main.
 
 deepseek_v41:
   gpu: GB300
@@ -10,9 +16,16 @@ deepseek_v41:
     - test_deepseek_v41_server.py
     - test_deepseek_v41_switch.py
 
-# TP8: needs a host with eight GPUs; one GB300 tray has four
-qwen3_5:
+# The runner: four GB300 on one host, in SGLang's cu134 image: it carries the MSA
+# kernels SGLang's MiniMax-M3.1 support imports, at SGLang's pinned commit (no other
+# SGLang branch is needed). The server compiles the package's kernels when it loads,
+# so it needs the CUDA 13.4 toolkit's nvcc then (CUDA_HOME). The tests set the plugin
+# whitelist (SGLANG_PLUGINS) themselves. acc and perf are the matched pair against
+# native SGLang; parity supplements acc.
+minimax_m31:
   gpu: GB300
-  gpus: 8
+  gpus: 4
   tests:
-    - test_qwen3_5_stock_parity.py
+    - test_minimax_m31_acc.py
+    - test_minimax_m31_perf.py
+    - test_minimax_m31_parity.py
